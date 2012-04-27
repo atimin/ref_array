@@ -3,35 +3,33 @@
 
 VALUE cRefArray;
 
-/* Array as reference to aray in @@refs */
 typedef struct ary
 {
-  long id;        // index to @@refs and @@counts
-  long index;     // index in @@refs[id]
-  long len;       // len array
+  VALUE ary;     // ary
+  long begin;    // begin index
+  long len;      // len array
+  long count;    // ref count
+  void *src;     // pointer to other array
 
 } ARRAY;
 
-#define REFS rb_cv_get(CLASS_OF(cRefArray), "@@refs")
-#define COUNTS rb_cv_get(CLASS_OF(cRefArray), "@@counts")
-
-static VALUE ra_get_refs(VALUE klass)
+void ra_mark(void *a)
 {
-  return REFS;
+  rb_gc_mark(((ARRAY*)a)->ary);
 }
 
-void ra_ary_delete(ARRAY *a)
+void ra_free(ARRAY *a)
 {
-  VALUE c;
-  c = rb_ary_entry(COUNTS, a->id);
-  
-  if (FIX2LONG(c) > 1) {
-    /* decriment count of references */
-    rb_ary_store(COUNTS, a->id, rb_funcall(c, rb_intern("pred"), 0));
-  } 
-  else {
-    /* Delete if other references doesn't exist */
-    rb_ary_store(REFS, a->id, Qnil);
+  if (a->count <= 1) {
+    rb_ary_free(a->ary);
+    free(a);
+  }
+}
+
+void ra_free_ref(ARRAY *a)
+{
+  if (a->src != NULL) {
+    ((ARRAY*)a->src)->count--;
     free(a);
   }
 }
@@ -40,15 +38,13 @@ static VALUE ra_new(VALUE klass, VALUE ary)
 {
   ARRAY *a = malloc(sizeof(ARRAY));
 
-  a->id = RARRAY_LEN(REFS);
-  a->index = 0;
+  a->ary =rb_ary_dup(ary);
+  a->begin = 0;
   a->len = RARRAY_LEN(ary);
+  a->count = 1;
+  a->src = NULL;
 
-  /* registrate array */
-  rb_ary_push(REFS, rb_ary_dup(ary));
-  rb_ary_push(COUNTS, INT2FIX(1));
-
-  return Data_Wrap_Struct(klass, NULL, ra_ary_delete, a);
+  return Data_Wrap_Struct(klass, ra_mark, ra_free, a);
 }
 
 /* 
@@ -58,11 +54,9 @@ static VALUE ra_new(VALUE klass, VALUE ary)
 static VALUE ra_to_a(VALUE self)
 {
   ARRAY *a;
-  VALUE ary;
 
   Data_Get_Struct(self, ARRAY, a);
-  ary  = rb_ary_entry(REFS, a->id);
-  return rb_ary_subseq(ary, a->index, a->len);
+  return rb_ary_subseq(a->ary, a->begin, a->len);
 }
 
 /* 
@@ -82,15 +76,13 @@ static VALUE ra_get_indexer(VALUE self, VALUE index)
   rb_range_values(index, &beg, &end, &i);
 
   new_a = malloc(sizeof(ARRAY));
-  new_a->id = a->id;
-  new_a->index = FIX2LONG(beg);
-  new_a->len = FIX2LONG(end) - new_a->index + 1;
+  new_a->ary = a->ary;
+  new_a->begin = FIX2LONG(beg);
+  new_a->len = FIX2LONG(end) - new_a->begin + 1;
+  new_a->count = 0;
+  new_a->src = (void*)a;
 
-
-  c = rb_ary_entry(COUNTS, a->id);
-  rb_ary_store(COUNTS, a->id, rb_funcall(c, rb_intern("next"), 0));
-
-  return Data_Wrap_Struct(CLASS_OF(self), NULL, ra_ary_delete, new_a);
+  return Data_Wrap_Struct(CLASS_OF(self), NULL, ra_free_ref, new_a);
 }
 
 /* 
@@ -105,8 +97,7 @@ static VALUE ra_set_indexer(VALUE self, VALUE index, VALUE val)
   VALUE ary;
   Data_Get_Struct(self, ARRAY, a);
   
-  ary = rb_ary_entry(REFS, a->id);
-  rb_ary_store(ary, FIX2LONG(index) + a->index, val);
+  rb_ary_store(a->ary, FIX2LONG(index) + a->begin, val);
   return val;
 }
 
@@ -114,9 +105,6 @@ void Init_ref_array()
 {
   cRefArray = rb_define_class("RefArray", rb_cObject);
 
-  rb_define_class_variable(cRefArray, "@@refs", rb_ary_new());
-  rb_define_class_variable(cRefArray, "@@counts", rb_ary_new());
-  rb_define_singleton_method(cRefArray, "refs", ra_get_refs, 0);
   rb_define_singleton_method(cRefArray, "new", ra_new, 1);
 
   rb_define_method(cRefArray, "to_a", ra_to_a, 0);
