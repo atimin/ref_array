@@ -82,6 +82,8 @@ static VALUE ra_get_indexer(VALUE self, VALUE index)
   new_a->count = 0;
   new_a->src = (void*)a;
 
+  a->count++;
+
   return Data_Wrap_Struct(CLASS_OF(self), NULL, ra_free_ref, new_a);
 }
 
